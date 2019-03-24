@@ -71,6 +71,7 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
         return WtfdmdgDefaultCommandParser.SyntaxHighlighter( self, document )
 
     def execute( self, tasks, tags, line ):
+        app = WtfdmdgApplication.instance()
         ref, begin, end, body = self._getParts( line )
         if body is not None:
             self._updateTags( tags, body )
@@ -83,9 +84,13 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
         elif ref is not None and all( x is None for x in ( begin, end, body ) ):
             if ref != "*":
                 del tasks[ int( ref ) ]
-        elif ref is None and any( x is not None for x in [ begin, end, body ] ):
-            ref = WtfdmdgApplication.instance().generateTaskId()
-            tasks[ int( ref ) ] = Task( ref, begin, end, body )
+        elif ( ref is None or int( ref ) not in app.session ) and any( x is not None for x in [ begin, end, body ] ):
+            if body is None:
+                # New tasks must always have body
+                print( "NOP" )
+            else:
+                ref = int( ref or app.generateTaskId() )
+                tasks[ int( ref ) ] = Task( ref, begin, end, body )
         elif ref != "*":
             a, b, c, d = tasks[ int( ref ) ]
             if begin is not None:
@@ -281,29 +286,40 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         """
         Create a unique task id
         """
-        return next( itertools.filterfalse( set( self.session.keys() ).__contains__, itertools.count( 0 ) ) )
+        if len( self.session ) == 0:
+            return 0
+        return max( self.session.keys() ) + 1
+
+    def getTaskByIndex( self, index ):
+        """
+        Get a task by its order in the session.
+        """
+        return self.__getSortedTaskList()[ index ]
 
     def getSelectedTask( self ):
         """
         Return the currently selected task
         """
         if self.selectedTask is not None:
-            return self.session[self.selectedTask]
+            return self.session[ self.selectedTask ]
         return None
 
     def getSelectedTaskIndex( self ):
         """
         Get the index of the selected task
         """
-        return self.selectedTask
+        if self.selectedTask is None:
+            return None
+        refs = [ x.ref for x in self.__getSortedTaskList() ]
+        assert( self.selectedTask in refs )
+        return refs.index( self.selectedTask )
 
     def selectTaskByRef( self, ref ):
         """
         Set selected task by ref ID
         """
-        for i in range( len( self.session ) ):
-            if self.session[ i ].ref is not None and int( self.session[ i ].ref ) == ref:
-                self.selectedTask = ref
+        if ref in self.session:
+            self.selectedTask = ref
 
     def reverseTask( self, task ):
         """
@@ -311,36 +327,45 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         """
         return self._commandParser.encodeTask( task )
 
+    def stepTask( self, offset ):
+        """
+        Advance task by positive/negative index count. Advancing past end
+        or before start clears selection. When selection is clear, moving
+        backward goes to last index, and moving forward goes to first index.
+
+        No selection can be thought of as a final "invisible" item.
+        """
+        refs = [ x.ref for x in self.__getSortedTaskList() ] + [ None ]
+        assert( self.selectedTask in refs )
+        curi = refs.index( self.selectedTask )
+        self.selectedTask = refs[ ( curi + offset ) % len( refs ) ]
+
     def selectNextTask( self ):
         """
         Select the next task
         """
-        if self.selectedTask is len( self.session ) - 1:
-            self.selectedTask = None
-            return
-        if self.selectedTask is None:
-            self.selectedTask = 0
-        else:
-            self.selectedTask += 1
-        self.selectedTask %= len( self.session )
+        self.stepTask( 1 )
 
     def selectPreviousTask( self ):
         """
         Select the previous task
         """
-        if self.selectedTask is 0:
-            self.selectedTask = None
-            return
-        if self.selectedTask is None:
-            self.selectedTask = len( self.session )
-        self.selectedTask -= 1
-        self.selectedTask %= len( self.session )
+        self.stepTask( -1 )
 
     def deselectTask( self ):
         """
         Don't select any tasks
         """
         self.selectedTask = None
+
+    def __getSortedTaskList( self ):
+        """
+        Return list of tasks, sorted by start time.
+        """
+        tasks = self.session.values()
+        startedTasks =   [ t for t in tasks if t.begin is not None ]
+        unstartedTasks = [ t for t in tasks if t.begin is None ]
+        return ( unstartedTasks + sorted( startedTasks, key=lambda r: r.begin ) )
 
 class WtfdmdgMainWindow( QtWidgets.QMainWindow ):
 
@@ -465,12 +490,14 @@ class WtfdmdgTaskTable( QtWidgets.QTableWidget ):
         """
         Draw all items in session
         """
+        app = WtfdmdgApplication.instance()
 
-        selectedRow = WtfdmdgApplication.instance().getSelectedTaskIndex()
+        selectedRow = app.getSelectedTaskIndex()
 
         self.setRowCount( len( session ) )
 
-        for rowi, task in enumerate( session.values() ):
+        for rowi in range( len( session ) ):
+            task = app.getTaskByIndex( rowi )
             cols = range( 4 )
             vals = [
                 str( task.ref ),
