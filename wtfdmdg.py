@@ -20,18 +20,27 @@ import time
 import pickle
 import os
 import itertools
+import pylab
 from pathlib import Path
 
 Task = collections.namedtuple( "Task", ( "ref", "begin", "end", "body" ) )
 
 APPDATA_DIR = os.path.join( str( Path.home() ), ".local", "share", "wtfdmdg" )
 
+CMAP = 'gist_rainbow'
+
 def FILE_PATH( dt ):
     return os.path.join( APPDATA_DIR, datetime.datetime.strftime( dt, "%y-%m-%d.pickle" ) )
 
 class WtfdmdgCommandParserInterface( object ):
 
-    def highlightDocument( self, document ):
+    def getCommandLineHighlighter( self, document ):
+        """
+        Return a QSyntaxHighlighter
+        """
+        raise NotImplementedError
+
+    def getTagBankHighlighter( self, document ):
         """
         Return a QSyntaxHighlighter
         """
@@ -58,27 +67,50 @@ class WtfdmdgCommandParserInterface( object ):
 
 class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
 
-    REF   = "(?:(?P<ref>(?:\d+)|\*):)?"
-    BODY  = "(?:(?P<body>.+))?"
-    TIME  = "(?:\d+)|n"
-    BEGIN = "(?:(?P<begin>" + TIME + "))?"
-    END   = "(?:(?P<end>" + TIME + "))?"
-    TAG   = "(/+)(\S+)"
+    REF   = r"(?:(?P<ref>(?:\d+)|\*):)?"
+    BODY  = r"(?:(?P<body>.+))?"
+    TIME  = r"(?:\d+)|n"
+    BEGIN = r"(?:(?P<begin>" + TIME + "))?"
+    END   = r"(?:(?P<end>" + TIME + "))?"
+    TAG   = r"(/+)(\S+)"
 
-    TAG_REGEX  = re.compile( TAG )
-    LINE_REGEX = re.compile( REF + BEGIN + "-?" + END + "\.?" + BODY )
+    TAG_REGEX     = re.compile( TAG )
+    LINE_REGEX    = re.compile( REF + BEGIN + "-?" + END + "\.?" + BODY )
+    TAGBANK_REGEX = re.compile( r"\S+" )
 
-    class SyntaxHighlighter( QtGui.QSyntaxHighlighter ):
+    class CommandLineSyntaxHighlighter( QtGui.QSyntaxHighlighter ):
         def __init__( self, parser, document ):
-            super( WtfdmdgDefaultCommandParser.SyntaxHighlighter, self ).__init__( document )
+            super( WtfdmdgDefaultCommandParser.CommandLineSyntaxHighlighter, self ).__init__( document )
             self.parser = parser
         def highlightBlock( self, block ):
             for rng, fmt in zip( self.parser._getRanges( block ), self.parser._getFormats() ):
                 if rng[0] >= 0 and rng[1] >= 0:
                     self.setFormat( rng[0], rng[1], fmt )
 
-    def highlightDocument( self, document ):
-        return WtfdmdgDefaultCommandParser.SyntaxHighlighter( self, document )
+    class TagBankSyntaxHighlighter( QtGui.QSyntaxHighlighter ):
+        def __init__( self, parser, tagclass, document ):
+            super( WtfdmdgDefaultCommandParser.TagBankSyntaxHighlighter, self ).__init__( document )
+            self.parser = parser
+            self.tagclass = tagclass
+        def highlightBlock( self, block ):
+            app = WtfdmdgApplication.instance()
+            if self.tagclass is not app.getSelectedTagClass():
+                # Nothing to do
+                return
+            tagRanges = self.parser._getTagBankRanges( block )
+            tagColors = [ app.getTagColor( self.tagclass, block[ x[0]:x[1] ] ) for x in tagRanges ]
+            for rng, clr in zip( tagRanges, tagColors ):
+                if rng[0] >= 0 and rng[1] >= 0:
+                    fmt = QtGui.QTextCharFormat()
+                    fmt.setFontWeight( QtGui.QFont.Bold )
+                    fmt.setForeground( QtGui.QColor( *clr ) )
+                    self.setFormat( rng[0], rng[1], fmt )
+
+    def getCommandLineHighlighter( self, document ):
+        return WtfdmdgDefaultCommandParser.CommandLineSyntaxHighlighter( self, document )
+
+    def getTagBankHighlighter( self, tagclass, document ):
+        return WtfdmdgDefaultCommandParser.TagBankSyntaxHighlighter( self, tagclass, document )
 
     def execute( self, tasks, line ):
         app = WtfdmdgApplication.instance()
@@ -129,6 +161,9 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
         if m is None:
             return None
         return [ m.span( x ) for x in [ "ref", "begin", "end", "body" ] ]
+
+    def _getTagBankRanges( self, line ):
+        return [ m.span() for m in WtfdmdgDefaultCommandParser.TAGBANK_REGEX.finditer( line ) ]
 
     def _getFormats( self ):
         reff   = QtGui.QTextCharFormat()
@@ -191,6 +226,7 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         self.selectedTask = None
         if parser is None:
             parser = WtfdmdgDefaultCommandParser()
+        self._tagColorMap = pylab.get_cmap( CMAP )
         self._commandParser = parser
         self.loadFile()
         self._mainWindow = WtfdmdgMainWindow()
@@ -245,11 +281,26 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         else:
             self.deselectTask()
 
-    def highlightDocument( self, line ):
+    def getCommandLineHighlighter( self, doc ):
         """
-        Provide syntax hilighting for a document
+        Apply highlighting to command line document
         """
-        return self._commandParser.highlightDocument( line )
+        return self._commandParser.getCommandLineHighlighter( doc )
+
+    def getTagBankHighlighter( self, tagclass, doc ):
+        """
+        Apply highlighting to tagbank document
+        """
+        return self._commandParser.getTagBankHighlighter( tagclass, doc )
+
+    def getTagColor( self, tagclass, tag ):
+        """
+        Get (r,g,b) color for tag in tagclass
+        """
+        assert( tagclass in self.tagtable and tag in self.tagtable[ tagclass ] )
+        i = self.tagtable[ tagclass ].index( tag.lower() )
+        nc = len( self.tagtable[ tagclass ] )
+        return [ 255 * x for x in ( self._tagColorMap( float( i ) / nc )[:-1] ) ]
 
     def getSession( self ):
         """
@@ -281,8 +332,12 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         """
         Get the currently selected tag class
         """
-        # TODO
-        return 1
+        # TODO shouldn't be reaching into the widget here
+        selectedRows = WtfdmdgApplication.instance()._mainWindow._tagTable.selectionModel().selectedRows()
+        assert( len( selectedRows ) <= 1 )
+        if len( selectedRows ) == 0:
+            return None
+        return selectedRows[0].row() + 1
 
     def generateTaskId( self ):
         """
@@ -448,7 +503,7 @@ class WtfdmdgCommandTextEdit( QtWidgets.QTextEdit ):
         """
         super( WtfdmdgCommandTextEdit, self ).__init__()
         self.setVerticalScrollBarPolicy( QtCore.Qt.ScrollBarAlwaysOff )
-        self._hilighter = WtfdmdgApplication.instance().highlightDocument( self.document() )
+        self._hilighter = WtfdmdgApplication.instance().getCommandLineHighlighter( self.document() )
         self.setFont( QtGui.QFontDatabase.systemFont( QtGui.QFontDatabase.FixedFont ) )
         self.setMinimumHeight( self.document().size().height() )
 
@@ -562,24 +617,32 @@ class WtfdmdgTagTable( QtWidgets.QTableWidget ):
         """
         Return class and list of selected tags
         """
-        selectedRows = self.selectionModel().selectedRows()
         tags = WtfdmdgApplication.instance().getTags()
-        if len( selectedRows ) > 1:
-            print( "TOO MANY ROWS???" )
-            assert( False )
-        if len( selectedRows ) == 0:
-            return None
-        return selectedRows[0].row() + 1, tags[ selectedRows[0].row() + 1 ]
+        cls = WtfdmdgApplication.instance().getSelectedTagClass()
+        if cls is not None:
+            return tags[ cls ]
+        return {}
 
     def redraw( self, tagtable ):
         """
         Draw all items in session
         """
+        app = WtfdmdgApplication.instance()
+
         self.setRowCount( len( tagtable ) )
 
         for rowi, ( cls, tags ) in enumerate( tagtable.items() ):
             self.setItem( rowi, 0, QtWidgets.QTableWidgetItem( str( cls ) ) )
-            self.setItem( rowi, 1, QtWidgets.QTableWidgetItem( ", ".join( tags ) ) )
+
+            # self.setItem( rowi, 1, QtWidgets.QTableWidgetItem( ", ".join( tags ) ) )
+            te = QtGui.QTextEdit( " ".join( tags ) )
+            te.setReadOnly( True )
+            te.hl = app.getTagBankHighlighter( cls, te.document() )
+            te.setMinimumHeight( te.document().size().height() )
+            te.setVerticalScrollBarPolicy( QtCore.Qt.ScrollBarAlwaysOff )
+            te.document().setDocumentMargin( 0 )
+            te.setFrameStyle( QtGui.QFrame.NoFrame )
+            self.setCellWidget( rowi, 1, te )
 
 class WtfdmdgTimelineWidget( pg.PlotWidget ):
 
@@ -605,7 +668,6 @@ class WtfdmdgTimelineWidget( pg.PlotWidget ):
         """
         ax = WtfdmdgTimelineWidget.DateAxis( orientation='left')
         super( WtfdmdgTimelineWidget, self ).__init__( axisItems={'left': ax } )
-        # self.setTitle( "It Went Here" )
         self._barGraphItem = pg.BarGraphItem( x0=[], x1=[], y0=[], y1=[] )
         self.addItem( self._barGraphItem )
         self.getViewBox().setMouseEnabled( False, False )
@@ -664,12 +726,29 @@ class WtfdmdgTimelineWidget( pg.PlotWidget ):
         """
         Construct brush for this task
         """
+        app = WtfdmdgApplication.instance()
         selectedTagClass = WtfdmdgApplication.instance().getSelectedTagClass()
         allTags = WtfdmdgApplication.instance().getTags()
         theseTags = WtfdmdgApplication.instance().getTagsForTask( task )
-        if selectedTagClass not in theseTags or len( theseTags[ selectedTagClass ] ) <= 0:#len( theseTags ) == 0 or len( theseTags[ selectedTagClass ] ) == 0:
+        if selectedTagClass not in theseTags or len( theseTags[ selectedTagClass ] ) <= 0:
+            # This task has no tags in currently selected class, so no color
             return pg.mkBrush( 200, 200, 200 )
-        return pg.mkBrush( list( allTags[ selectedTagClass ] ).index( theseTags[ selectedTagClass ][ 0 ] ), len( allTags[selectedTagClass] ) )
+
+        theseTags = theseTags[ selectedTagClass ]
+        if len( theseTags ) == 1:
+            # This task has a single tag in the current class, solid color
+            return pg.mkBrush( *app.getTagColor( selectedTagClass, theseTags[0] ) )
+        else:
+            # This task has multiple colors in the current class, use a gradient
+            nc = len( theseTags )
+            gradient = QtGui.QLinearGradient( QtCore.QPointF( 0, 0 ), QtCore.QPointF( 1, 0 ) )
+            gradient.setSpread( QtGui.QGradient.RepeatSpread )
+            gradient.setCoordinateMode( QtGui.QGradient.ObjectMode );
+            for i, t in enumerate( theseTags ):
+                offset = float( i ) / ( nc - 1 )
+                color = QtGui.QColor( *app.getTagColor( selectedTagClass, t ) )
+                gradient.setColorAt( offset, color )
+            return pg.mkBrush( QtGui.QBrush( gradient ) )
 
 #
 # DEBUG DRIVER
