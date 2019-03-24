@@ -224,6 +224,7 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         self.session = {}
         self.tagtable = {}
         self.selectedTask = None
+        self.selectedTagClass = None
         if parser is None:
             parser = WtfdmdgDefaultCommandParser()
         self._tagColorMap = pylab.get_cmap( CMAP )
@@ -332,12 +333,7 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         """
         Get the currently selected tag class
         """
-        # TODO shouldn't be reaching into the widget here
-        selectedRows = WtfdmdgApplication.instance()._mainWindow._tagTable.selectionModel().selectedRows()
-        assert( len( selectedRows ) <= 1 )
-        if len( selectedRows ) == 0:
-            return None
-        return selectedRows[0].row() + 1
+        return self.selectedTagClass
 
     def generateTaskId( self ):
         """
@@ -408,6 +404,26 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         Select the previous task
         """
         self.stepTask( -1 )
+
+    def stepTagClass( self, offset ):
+        """
+        Same as stepTask, but for the tag class.
+        """
+        clss = sorted( list( self.tagtable.keys() ) ) + [ None ]
+        curi = clss.index( self.selectedTagClass )
+        self.selectedTagClass = clss[ ( curi + offset ) % len( clss ) ]
+
+    def selectNextTagClass( self ):
+        """
+        Select the next tag class.
+        """
+        self.stepTagClass( 1 )
+
+    def selectPreviousTagClass( self ):
+        """
+        Select the previous tag class
+        """
+        self.stepTagClass( -1 )
 
     def deselectTask( self ):
         """
@@ -515,13 +531,19 @@ class WtfdmdgCommandTextEdit( QtWidgets.QTextEdit ):
             WtfdmdgApplication.instance().processLine( self.toPlainText() )
             self.clear()
         elif( event.key() == QtCore.Qt.Key_Down ):
-            WtfdmdgApplication.instance().selectNextTask()
-            task = WtfdmdgApplication.instance().getSelectedTask()
-            self.preloadTask( task )
+            if event.modifiers() == QtCore.Qt.ShiftModifier:
+                WtfdmdgApplication.instance().selectNextTagClass()
+            else:
+                WtfdmdgApplication.instance().selectNextTask()
+                task = WtfdmdgApplication.instance().getSelectedTask()
+                self.preloadTask( task )
         elif( event.key() == QtCore.Qt.Key_Up ):
-            WtfdmdgApplication.instance().selectPreviousTask()
-            task = WtfdmdgApplication.instance().getSelectedTask()
-            self.preloadTask( task )
+            if event.modifiers() == QtCore.Qt.ShiftModifier:
+                WtfdmdgApplication.instance().selectPreviousTagClass()
+            else:
+                WtfdmdgApplication.instance().selectPreviousTask()
+                task = WtfdmdgApplication.instance().getSelectedTask()
+                self.preloadTask( task )
         elif( event.key() == QtCore.Qt.Key_Escape ):
             self.clear()
         else:
@@ -631,10 +653,10 @@ class WtfdmdgTagTable( QtWidgets.QTableWidget ):
 
         self.setRowCount( len( tagtable ) )
 
-        for rowi, ( cls, tags ) in enumerate( tagtable.items() ):
-            self.setItem( rowi, 0, QtWidgets.QTableWidgetItem( str( cls ) ) )
+        for rowi, ( cls, tags ) in enumerate( sorted( tagtable.items(), key=lambda x: x[0] ) ):
+            ci = QtWidgets.QTableWidgetItem( str( cls ) )
+            self.setItem( rowi, 0, ci )
 
-            # self.setItem( rowi, 1, QtWidgets.QTableWidgetItem( ", ".join( tags ) ) )
             te = QtGui.QTextEdit( " ".join( tags ) )
             te.setReadOnly( True )
             te.hl = app.getTagBankHighlighter( cls, te.document() )
