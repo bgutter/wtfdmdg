@@ -188,7 +188,9 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
         if string is None:
             return None
         if string == "n":
-            return datetime.datetime.now()
+            dt = datetime.datetime.now()
+            dt.replace( second=0 )
+            return dt
         if string.isdigit():
             if len( string ) <= 2:
                 hr = int( string )
@@ -197,7 +199,7 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
                 mn = int( string[-2:] )
                 hr = int( string[ :-2 ] )
             dt = datetime.datetime.now()
-            dt = dt.replace( hour=hr, minute=mn )
+            dt = dt.replace( hour=hr, minute=mn, second=0 )
             return dt
         assert( False )
         return None
@@ -709,7 +711,9 @@ class WtfdmdgTimelineWidget( pg.PlotWidget ):
             return
 
         def activeAt( t0, t1 ):
-            return [ x for x in tasks if not ( t1 < x.begin or t0 > x.end ) ]
+            minute = datetime.timedelta( minutes=1 )
+            t0 = t0 + minute # Add a minute to prevent creating columns when one task ends exactly as another starts
+            return [ x for x in tasks if not ( t1 < ( x.begin ) or t0 > ( x.end ) ) ]
         def numActiveAt( t0, t1 ):
             return len( activeAt( t0, t1 ) )
         importantTimes = sorted( set( x.begin for x in tasks ) | set( x.end for x in tasks ) )
