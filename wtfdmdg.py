@@ -172,9 +172,9 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
         if task.ref is not None:
             text += str( task.ref ) + ":"
         if task.begin is not None:
-            text += datetime.datetime.strftime( task.begin, "%I%M" )
+            text += datetime.datetime.strftime( task.begin, "%H%M" )
         if task.end is not None:
-            text += "-" + datetime.datetime.strftime( task.end, "%I%M" )
+            text += "-" + datetime.datetime.strftime( task.end, "%H%M" )
         if task.body is not None:
             text += "." + task.body
         return text
@@ -276,6 +276,13 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         Return the list of selected tags
         """
         return self._mainWindow._tagTable.getSelectedTags()
+
+    def getSelectedTagClass( self ):
+        """
+        Get the currently selected tag class
+        """
+        # TODO
+        return 1
 
     def generateTaskId( self ):
         """
@@ -516,8 +523,8 @@ class WtfdmdgTaskTable( QtWidgets.QTableWidget ):
             cols = range( 4 )
             vals = [
                 str( task.ref ),
-                str( "" if task.begin is None else datetime.datetime.strftime( task.begin, "%I:%M" ) ),
-                str( "" if task.end is None else datetime.datetime.strftime( task.end, "%I:%M" ) ),
+                str( "" if task.begin is None else datetime.datetime.strftime( task.begin, "%H:%M" ) ),
+                str( "" if task.end is None else datetime.datetime.strftime( task.end, "%H:%M" ) ),
                 str( task.body ) ]
             for c, v in zip( cols, vals ):
                 i = QtWidgets.QTableWidgetItem( v )
@@ -588,7 +595,7 @@ class WtfdmdgTimelineWidget( pg.PlotWidget ):
             for v in values:
                 # vs is the original tick value
                 vs = v * scale
-                vstr = time.strftime( "%I:%M", time.localtime( vs ) )
+                vstr = time.strftime( "%H:%M", time.localtime( vs ) )
                 strings.append( vstr )
             return strings
 
@@ -657,10 +664,10 @@ class WtfdmdgTimelineWidget( pg.PlotWidget ):
         """
         Construct brush for this task
         """
-        selectedTagClass = 1 # WtfdmdgApplication.instance().getSelectedTagClass()
+        selectedTagClass = WtfdmdgApplication.instance().getSelectedTagClass()
         allTags = WtfdmdgApplication.instance().getTags()
         theseTags = WtfdmdgApplication.instance().getTagsForTask( task )
-        if len( theseTags ) == 0 or len( theseTags[ selectedTagClass ] ) == 0:
+        if selectedTagClass not in theseTags or len( theseTags[ selectedTagClass ] ) <= 0:#len( theseTags ) == 0 or len( theseTags[ selectedTagClass ] ) == 0:
             return pg.mkBrush( 200, 200, 200 )
         return pg.mkBrush( list( allTags[ selectedTagClass ] ).index( theseTags[ selectedTagClass ][ 0 ] ), len( allTags[selectedTagClass] ) )
 
