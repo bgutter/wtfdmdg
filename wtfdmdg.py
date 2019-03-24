@@ -20,10 +20,11 @@ import time
 import pickle
 import os
 import itertools
+from pathlib import Path
 
 Task = collections.namedtuple( "Task", ( "ref", "begin", "end", "body" ) )
 
-APPDATA_DIR = "/home/brandon/.wtfdmdg"
+APPDATA_DIR = os.path.join( str( Path.home() ), ".local", "share", "wtfdmdg" )
 
 def FILE_PATH( dt ):
     return os.path.join( APPDATA_DIR, datetime.datetime.strftime( dt, "%y-%m-%d.pickle" ) )
