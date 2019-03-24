@@ -37,9 +37,16 @@ class WtfdmdgCommandParserInterface( object ):
         """
         raise NotImplementedError
 
-    def execute( self, session, tags, line ):
+    def execute( self, session, line ):
         """
         Evaluate line and execute against session
+        """
+        raise NotImplementedError
+
+    def getTaskTags( self, body ):
+        """
+        Return a dict mapping tag class to a list of tags, given
+        the body of a task.
         """
         raise NotImplementedError
 
@@ -56,7 +63,9 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
     TIME  = "(?:\d+)|n"
     BEGIN = "(?:(?P<begin>" + TIME + "))?"
     END   = "(?:(?P<end>" + TIME + "))?"
+    TAG   = "(/+)(\S+)"
 
+    TAG_REGEX  = re.compile( TAG )
     LINE_REGEX = re.compile( REF + BEGIN + "-?" + END + "\.?" + BODY )
 
     class SyntaxHighlighter( QtGui.QSyntaxHighlighter ):
@@ -71,13 +80,9 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
     def highlightDocument( self, document ):
         return WtfdmdgDefaultCommandParser.SyntaxHighlighter( self, document )
 
-    def execute( self, tasks, tags, line ):
+    def execute( self, tasks, line ):
         app = WtfdmdgApplication.instance()
         ref, begin, end, body = self._getParts( line )
-        if body is not None:
-            self._updateTags( tags, body )
-            body = body.replace( "/", "" )
-            body = body.replace( "\\", "" )
         begin = self._getDatetime( begin )
         end = self._getDatetime( end )
         if all( x is None for x in [ ref, begin, end, body ] ):
@@ -101,6 +106,17 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
             if body is not None:
                 d = body
             tasks[ int( ref ) ] = Task( a, b, c, d )
+
+    def getTaskTags( self, body ):
+        tagtable = {}
+        for tagmatch in WtfdmdgDefaultCommandParser.TAG_REGEX.findall( body ):
+            tagclass = len( tagmatch[0] )
+            tagtext = tagmatch[1].lower()
+            if tagclass not in tagtable:
+                tagtable[ tagclass ] = []
+            if tagtext not in tagtable[ tagclass ]:
+                tagtable[ tagclass ].append( tagtext )
+        return tagtable
 
     def _getParts( self, line ):
         m = WtfdmdgDefaultCommandParser.LINE_REGEX.match( line )
@@ -132,23 +148,6 @@ class WtfdmdgDefaultCommandParser( WtfdmdgCommandParserInterface ):
         bodyf.setFontWeight( QtGui.QFont.Bold )
 
         return [ reff, beginf, endf, bodyf ]
-
-    def _updateTags( self, tags, body ):
-        for m in re.findall( "(/+)(\S+)", body ):
-            cls = len( m[0] )
-            text = m[1]
-            if cls not in tags:
-                tags[ cls ] = set()
-            tags[ cls ].add( text )
-        for m in re.findall( "(\\\\+)(\S+)", body ):
-            print( "HIT" )
-            cls = len( m[0] )
-            text = m[1]
-            if cls not in tags:
-                return
-            tags[ cls ].remove( text )
-            if len( tags[ cls ] ) == 0:
-                del tags[ cls ]
 
     def _getDatetime( self, string ):
         if string is None:
@@ -189,22 +188,23 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         super( WtfdmdgApplication, self ).__init__( argv )
         self.session = {}
         self.tagtable = {}
-        self.loadFile()
         self.selectedTask = None
         if parser is None:
             parser = WtfdmdgDefaultCommandParser()
         self._commandParser = parser
+        self.loadFile()
         self._mainWindow = WtfdmdgMainWindow()
         self._mainWindow._commandTextEdit.setFocus()
         self.redraw()
 
-    def loadFile( self ):
+    def loadFile( self, path=None ):
         """
         Load state from file.
         """
-        now = datetime.datetime.now()
-        if os.path.exists( FILE_PATH( now ) ):
-            self.session, self.tagtable = pickle.load( open( FILE_PATH( now ), 'rb' ) )
+        path = path or FILE_PATH( datetime.datetime.now() )
+        if os.path.exists( path ):
+            self.session = pickle.load( open( path, 'rb' ) )
+            self.__refreshTags()
 
     def dumpFile( self ):
         """
@@ -212,7 +212,7 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         """
         if not os.path.exists( APPDATA_DIR ):
             os.makedirs( APPDATA_DIR )
-        pickle.dump( ( self.session, self.tagtable ), open( FILE_PATH( datetime.datetime.now() ), 'wb' ) )
+        pickle.dump( self.session, open( FILE_PATH( datetime.datetime.now() ), 'wb' ) )
 
     def redraw( self ):
         """
@@ -226,7 +226,8 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         """
         Parse and process a line of input
         """
-        self._commandParser.execute( self.session, self.tagtable, line )
+        self._commandParser.execute( self.session, line )
+        self.__refreshTags()
         self.dumpFile()
         self.deselectTask()
         self.redraw()
@@ -266,16 +267,9 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         """
         Get tags referenced by this task
         """
-        ret = {}
         if task.body is None:
             return {}
-        for tagClass in self.tagtable.keys():
-            ret[ tagClass ] = set()
-            for word in task.body.split( " " ):
-                if word in self.tagtable[ tagClass ]:
-                    ret[ tagClass ].add( word )
-            ret[ tagClass ] = list( ret[ tagClass ] )
-        return ret
+        return self._commandParser.getTaskTags( task.body )
 
     def getSelectedTags( self ):
         """
@@ -367,6 +361,26 @@ class WtfdmdgApplication( QtWidgets.QApplication ):
         startedTasks =   [ t for t in tasks if t.begin is not None ]
         unstartedTasks = [ t for t in tasks if t.begin is None ]
         return ( unstartedTasks + sorted( startedTasks, key=lambda r: r.begin ) )
+
+    def __mergeTags( self, tags ):
+        """
+        Given a dict mapping tag class to tag list, merge it
+        into self.tagtable.
+        """
+        for cls in tags:
+            if cls not in self.tagtable:
+                self.tagtable[ cls ] = []
+            for tag in tags[ cls ]:
+                if tag not in self.tagtable[ cls ]:
+                    self.tagtable[ cls ].append( tag )
+
+    def __refreshTags( self ):
+        """
+        Search current session for any tags.
+        """
+        self.tagtable = {}
+        for task in self.session.values():
+            self.__mergeTags( self._commandParser.getTaskTags( task.body ) )
 
 class WtfdmdgMainWindow( QtWidgets.QMainWindow ):
 
